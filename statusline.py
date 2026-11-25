@@ -7,14 +7,19 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from pathlib import Path
+
+from viewport import terminal_columns
 
 
 URI = "ui://my-statusline/footer"
 COMPACT_URI = "ui://my-statusline/compact"
+ADAPTIVE_URI = "ui://my-statusline/adaptive"
 PROVIDERS = {
     URI: ("statusline", "Moss footer"),
     COMPACT_URI: ("statusline_compact", "Moss · compact"),
+    ADAPTIVE_URI: ("statusline_adaptive", "Moss · adaptive"),
 }
 
 
@@ -57,22 +62,21 @@ def compact(value, limit):
 
 def git_status(cwd, short=False):
     now = time.monotonic()
-    cache_key = (cwd, short)
-    expires, cached = branch_cache.get(cache_key, (0, []))
+    expires, cached = branch_cache.get(cwd, (0, ([], [])))
     if now < expires:
-        return cached
+        return cached[int(short)]
 
-    parts = []
+    layouts = ([], [])
     git = shutil.which("git")
     if git and Path(cwd).is_absolute():
-        parts = read_worktree(git, cwd, short)
+        layouts = read_worktree(git, cwd)
     if len(branch_cache) >= 64:
         branch_cache.clear()
-    branch_cache[cache_key] = (now + 5, parts)
-    return parts
+    branch_cache[cwd] = (now + 5, layouts)
+    return layouts[int(short)]
 
 
-def read_worktree(git, cwd, short):
+def read_worktree(git, cwd):
     # Resolve Git through our PATH, never by searching inside the displayed workspace.
     command = [
         git, "--no-pager", "--no-optional-locks",
@@ -100,22 +104,22 @@ def read_worktree(git, cwd, short):
                 status = run(["status", "--porcelain=v2", "-z", "--branch",
                               "--ignore-submodules=all", "--untracked-files=normal"], 0.28)
                 if status.returncode == 0 and len(status.stdout) <= 512 * 1024:
-                    return git_summary(status.stdout, short)
+                    return git_summary(status.stdout), git_summary(status.stdout, short=True)
             except subprocess.TimeoutExpired:
                 pass
         head = run(["symbolic-ref", "--quiet", "--short", "HEAD"], 0.08)
         if head.returncode == 0:
-            branch = compact(head.stdout.decode(errors="replace").rstrip(), 12 if short else 22)
+            branch = head.stdout.decode(errors="replace").rstrip()
         elif head.returncode == 1:
             head = run(["rev-parse", "--short", "--verify", "HEAD"], 0.08)
             if head.returncode:
-                return []
+                return [], []
             branch = "@" + compact(head.stdout.decode(errors="replace").rstrip(), 12)
         else:
-            return []
-        return [text("⎇ " + branch, "green")]
+            return [], []
+        return [text("⎇ " + compact(branch, 22), "green")], [text("⎇ " + compact(branch, 12), "green")]
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return []
+        return [], []
 
 
 def git_summary(output, short=False):
@@ -178,7 +182,31 @@ def reset_countdown(timestamp):
     return f"{minutes}m"
 
 
-def allowances(account, short=False):
+def thread_cost(cost, short=False):
+    """Use the thread estimate from Codex, or its credit count if USD is unavailable."""
+    def reported(value):
+        return type(value) in (int, float) and 0 <= value <= sys.float_info.max
+
+    dollars = cost.get("total_cost_usd")
+    if reported(dollars):
+        tiny = 0 < dollars < 0.01
+        amount = "<$0.01" if tiny else f"${abs(dollars):,.2f}"
+        if short:
+            return text(amount if tiny else f"~{amount}", "cyan")
+        return row([text("Est. cost", "primary"), text(amount, "cyan")])
+
+    credits = cost.get("total_credits")
+    if reported(credits):
+        amount = "<0.01" if 0 < credits < 0.01 else f"{abs(credits):,.2f}".rstrip("0").rstrip(".")
+        if short:
+            return text(f"{amount}cr", "cyan")
+        unit = "credit" if credits == 1 else "credits"
+        return text(f"{amount} {unit}", "cyan")
+
+    return text("$—" if short else "Cost —", "status-metadata")
+
+
+def allowances(account, short=False, extra=False):
     limits = sorted(account.get("rate_limits") or [], key=lambda item: item.get("limit_id") != "codex")
     windows = {}
     for limit in limits:
@@ -206,6 +234,10 @@ def allowances(account, short=False):
             label = f"{name} {label}".strip()
         if short:
             balance_field = text(f"{label} {percentage}", allowance_color(balance), bold=balance <= 10)
+            if extra and (duration == 10080 or balance <= 25):
+                countdown = reset_countdown(window.get("resets_at"))
+                if countdown:
+                    detail.append(text(f"↺ {label} in {countdown}", "status-metadata"))
         else:
             fields = [text(label, "primary"), text(f"{percentage} left", allowance_color(balance),
                                                    bold=balance <= 10)]
@@ -221,7 +253,7 @@ def allowances(account, short=False):
     return priority, detail
 
 
-def render(state, short=None):
+def render(state, short=None, extra=False, icon_only=False):
     """Return the UI tree for this resource read's thread."""
     thread = state.get("thread", {})
     model = thread.get("model", {})
@@ -231,10 +263,12 @@ def render(state, short=None):
     activity = thread.get("agent", {}).get("state")
     if activity in ACTIVITY:
         icon, color = ACTIVITY[activity]
-        children.append(row([text(f" {icon} {activity.upper()} ", "black", True)],
+        badge = f" {icon} " if icon_only else f" {icon} {activity.upper()} "
+        children.append(row([text(badge, "black", True)],
                             gap=0, background=color))
 
-    priority, limit_details = allowances(state.get("account") or {}, short)
+    children.append(thread_cost(thread.get("usage", {}).get("cost") or {}, short))
+    priority, limit_details = allowances(state.get("account") or {}, short, extra)
     children.extend(priority)
 
     context = thread.get("usage", {}).get("context", {})
@@ -244,11 +278,13 @@ def render(state, short=None):
     if used is not None:
         remaining = max(0, min(100, round(100 - used)))
         color = allowance_color(remaining)
+        filled = round(remaining * 6 / 100)
+        meter = row([text("━" * filled, color), text("┄" * (6 - filled), "status-metadata")], gap=0)
         if short:
             children.append(text(f"ctx {remaining}%", color))
+            if extra:
+                children.append(meter)
         else:
-            filled = round(remaining * 6 / 100)
-            meter = row([text("━" * filled, color), text("┄" * (6 - filled), "status-metadata")], gap=0)
             children.append(row([text("Context", "primary"), text(f"{remaining}% left", color), meter]))
 
     if not short:
@@ -265,15 +301,48 @@ def render(state, short=None):
             else:
                 children.append(row([text("│", "status-metadata"), text(compact(where, 30), "cyan")], gap=2))
         children.extend(git)
-    if not short:
+    if not short or extra:
         label = compact(model.get("display_name") or model.get("id") or "Codex", 28)
         model_parts = [text(label, "primary", True)]
         if effort := model.get("reasoning_level"):
-            model_parts.extend([text("· effort", "status-metadata"), text(compact(effort, 12).lower(), "cyan")])
+            model_parts.append(row([text("· effort", "status-metadata"), text(compact(effort, 12).lower(), "cyan")]))
         if tier := model.get("service_tier_display_name"):
-            model_parts.extend([text("· tier", "status-metadata"), text(compact(tier, 16).lower(), "yellow")])
-        children.append(row(model_parts))
+            model_parts.append(row([text("· tier", "status-metadata"), text(compact(tier, 16).lower(), "yellow")]))
+        if extra:
+            children.extend(model_parts)
+            children.extend(limit_details)
+        else:
+            children.append(row(model_parts))
     return row(children, gap=1 if short else 2, wrap="wrap")
+
+
+def cell_width(node):
+    """Terminal columns, including nested row gaps and wide path characters."""
+    if isinstance(node, str):
+        return sum(2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+                   for char in node if not unicodedata.combining(char) and char not in "\ufe0e\ufe0f")
+    children = node["children"]
+    gap = node.get("props", {}).get("gap", 0)
+    return sum(map(cell_width, children)) + max(0, len(children) - 1) * gap
+
+
+def adaptive_render(state, columns=None):
+    """A shared server sends priority-ordered fields for the TUI to clip locally."""
+    if columns is None:
+        return render(state, short=True, extra=True)
+    available = max(0, columns - 4)  # Codex reserves two columns at each edge.
+    full = render(state, short=False)
+    if cell_width(full) <= available:
+        return full
+    layout = render(state, short=True, extra=True, icon_only=columns <= 48)
+    visible = []
+    for field in layout["children"]:
+        width = cell_width(field) + (layout["props"]["gap"] if visible else 0)
+        if width > available:
+            break
+        visible.append(field)
+        available -= width
+    return row(visible, **layout["props"])
 
 
 STATE_KEY = "com.openai/codex-statusline-state"
@@ -288,8 +357,9 @@ def mcp_result(method, params):
         uri = params["uri"]
         short = uri == COMPACT_URI or os.environ.get("MOSS_COMPACT") == "1"
         snapshot = params.get("_meta", {}).get(STATE_KEY, {})
+        tree = adaptive_render(snapshot, terminal_columns()) if uri == ADAPTIVE_URI else render(snapshot, short)
         resource = {"uri": uri, "mimeType": "application/json",
-                    "text": json.dumps(render(snapshot, short), ensure_ascii=False)}
+                    "text": json.dumps(tree, ensure_ascii=False)}
         return {"contents": [resource]}
     if method == "tools/call":
         for uri, (name, _) in PROVIDERS.items():

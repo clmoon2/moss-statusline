@@ -10,7 +10,7 @@ import statusline
 
 
 SCENES = {
-    "split": ("A 60-column split", "See your weekly, five-hour and context balances on one line."),
+    "split": ("A 60-column split", "Thread cost, allowances and context stay visible together."),
     "ready": ("Ready to work", "Weekly allowance and context stay up front."),
     "limits": ("Running low", "At 25% or less, the five-hour balance moves up front."),
     "waiting": ("Waiting for input", "The branch shows local changes and commits ahead of upstream."),
@@ -22,7 +22,7 @@ ANSI = {
 }
 
 
-def sample_tree(scene):
+def sample_tree(scene, columns=None):
     activity, short_usage, context_usage = {
         "ready": ("ready", 16, 24),
         "limits": ("working", 94, 52),
@@ -40,17 +40,17 @@ def sample_tree(scene):
             "agent": {"state": activity},
             "model": {"display_name": "Codex", "reasoning_level": "high"},
             "workspace": {"cwd": "/work/fern"},
-            "usage": {"context": {"used_percentage": context_usage}},
+            "usage": {"context": {"used_percentage": context_usage},
+                      "cost": {"total_cost_usd": 1.84}},
         },
     }
     records = b"# branch.head main\0"
     if scene == "waiting":
         records = (b"# branch.head fix/cache\0# branch.ab +2 -0\0"
                    b"1 M. N... 100644 100644 100644 a b cache.py\0? cache_test.py\0")
-    short = scene == "split"
-    git_fields = statusline.git_summary(records, short=short)
-    with patch.object(statusline, "git_status", return_value=git_fields):
-        return statusline.render(state, short=short)
+    width = min(columns or 60, 60) if scene == "split" else columns or 180
+    with patch.object(statusline, "git_status", side_effect=lambda cwd, short: statusline.git_summary(records, short)):
+        return statusline.adaptive_render(state, width)
 
 
 def spans(node, inherited=None):
@@ -106,7 +106,7 @@ def main():
     for scene in ([args.scene] if args.scene else SCENES):
         title, _ = SCENES[scene]
         print(f"{title} (sample)")
-        for line in lines(sample_tree(scene), width):
+        for line in lines(sample_tree(scene, width), width):
             print("".join(colored(value, style) if colors else value for value, style in line))
         print()
 

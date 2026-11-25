@@ -1,4 +1,4 @@
-"""Black-box tests for the installed provider's stdio contract."""
+"""Tests for the provider's stdio contract and adaptive layout."""
 
 import json
 import os
@@ -10,8 +10,11 @@ import tempfile
 import time
 import unittest
 
-
 PROVIDER = Path(__file__).resolve().parents[1] / "statusline.py"
+sys.path.insert(0, str(PROVIDER.parent))
+from statusline import adaptive_render
+
+
 STATE_KEY = "com.openai/codex-statusline-state"
 
 
@@ -81,11 +84,13 @@ class StatuslineTests(unittest.TestCase):
             if entry["type"] != "statusline":
                 raise AssertionError("Expected a statusline entrypoint")
             endpoints[tool["name"]] = entry["resourceUri"]
-        if len(tools) != 2 or len(set(endpoints.values())) != 2:
-            raise AssertionError("Expected two providers with distinct resource URIs")
+        if len(tools) != 3 or len(set(endpoints.values())) != 3:
+            raise AssertionError("Expected three providers with distinct resource URIs")
         cls.uri = endpoints["statusline"]
         compact, = [tool for tool in tools if "compact" in tool["title"].lower()]
         cls.compact_uri = endpoints[compact["name"]]
+        adaptive, = [tool for tool in tools if tool["title"] == "Moss · adaptive"]
+        cls.adaptive_uri = endpoints[adaptive["name"]]
 
     def render(self, *snapshots, env=None):
         replies = exchange(read_messages(self.uri, *snapshots), env)
@@ -105,7 +110,9 @@ class StatuslineTests(unittest.TestCase):
         self.assertEqual([reply["id"] for reply in (hello, listing, error, pong)], ["init", 0, "bad", "ok"])
         self.assertEqual(hello["result"]["protocolVersion"], "2025-06-18")
         self.assertTrue({"resources", "tools"}.issubset(hello["result"]["capabilities"]))
-        self.assertEqual({r["uri"] for r in listing["result"]["resources"]}, {self.uri, self.compact_uri})
+        self.assertEqual({r["uri"] for r in listing["result"]["resources"]},
+                         {self.uri, self.compact_uri, self.adaptive_uri})
+        self.assertEqual(self.adaptive_uri, "ui://my-statusline/adaptive")
         self.assertIsInstance(error["error"]["code"], int)
         self.assertEqual(pong["result"], {})
 
@@ -119,6 +126,62 @@ class StatuslineTests(unittest.TestCase):
         self.assertIn("Model Two", after)
         self.assertNotIn("Model One", after)
         self.assertNotIn("Context ", after)
+
+    def test_estimated_usd_credits_and_unavailable_cost(self):
+        cases = [
+            ({"total_cost_usd": 2.75, "total_credits": 500}, "Est. cost $2.75", "~$2.75"),
+            ({"total_cost_usd": 0}, "Est. cost $0.00", "~$0.00"),
+            ({"total_cost_usd": 0.001}, "Est. cost <$0.01", "<$0.01"),
+            ({"total_credits": 3.5}, "3.5 credits", "3.5cr"),
+            ({"total_cost_usd": -1, "total_credits": 1}, "1 credit", "1cr"),
+            ({}, "Cost —", "$—"),
+        ]
+        for uri, expected_index in [(self.uri, 1), (self.compact_uri, 2)]:
+            states = [{"thread": {"usage": {"cost": cost}}} for cost, _, _ in cases]
+            replies = exchange(read_messages(uri, *states))
+            for case, reply in zip(cases, replies):
+                with self.subTest(uri=uri, cost=case[0]):
+                    result = display(extract_tree(reply, uri))
+                    self.assertIn(case[expected_index], result)
+                    if "total_credits" in case[0] and case[0].get("total_cost_usd", -1) < 0:
+                        self.assertNotIn("$", result)
+
+    def test_adaptive_budget_priority_and_reversible_resize(self):
+        state = {
+            "thread": {
+                "agent": {"state": "working"},
+                "model": {"display_name": "Garden Model", "reasoning_level": "high",
+                          "service_tier_display_name": "Standard"},
+                "usage": {"cost": {"total_cost_usd": 4.27}, "context": {"used_percentage": 42}},
+            },
+            "account": account(26, 96),
+        }
+        reply, = exchange(read_messages(self.adaptive_uri, state))
+        self.assertIn("$4.27", display(extract_tree(reply, self.adaptive_uri)))
+
+        unknown = display(adaptive_render(state, columns=None))
+        prefix = ["$4.27", "wk 74%", "5h 4%", "ctx 58%", "Garden Model"]
+        positions = [unknown.index(field) for field in prefix]
+        self.assertEqual(positions, sorted(positions))
+
+        counts = [42, 80, 160, 42]
+        rendered = [display(adaptive_render(state, columns=columns)) for columns in counts]
+        for columns, line in zip(counts, rendered):
+            with self.subTest(columns=columns):
+                self.assertLessEqual(len(line), columns - 4)
+                for value in ("$4.27", "74%", "4%", "58%"):
+                    self.assertIn(value, line)
+        narrow, medium, wide, narrow_again = rendered
+        self.assertNotIn("Garden Model", narrow)
+        self.assertIn("Garden Model", medium)
+        self.assertIn("Est. cost $4.27", wide)
+        self.assertIn("effort high", wide)
+        self.assertIn("tier standard", wide)
+        self.assertEqual(narrow_again, narrow)
+
+        state["thread"]["model"]["display_name"] = "竹" * 18
+        wide_name = display(adaptive_render(state, columns=80))
+        self.assertLessEqual(len(wide_name) + wide_name.count("竹"), 76)
 
     def test_full_footer_groups_reset_context_and_model_settings(self):
         state = {
