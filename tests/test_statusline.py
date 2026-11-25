@@ -28,9 +28,12 @@ def request(method, identifier=None, **params):
 def exchange(messages, env=None):
     wire = "".join(json.dumps(message) + "\n" for message in messages)
     env = {**os.environ, "MOSS_COMPACT": "0", **(env or {})}
+    # Exercise the shared-server layout regardless of the test runner's console.
+    detached = ({"creationflags": subprocess.DETACHED_PROCESS} if os.name == "nt"
+                else {"start_new_session": True})
     server = subprocess.run(
         [sys.executable, "-u", str(PROVIDER)], input=wire.encode(),
-        capture_output=True, check=True, timeout=5, env=env,
+        capture_output=True, check=True, timeout=5, env=env, **detached,
     )
     return [json.loads(line) for line in server.stdout.splitlines()]
 
