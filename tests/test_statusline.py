@@ -134,7 +134,6 @@ class StatuslineTests(unittest.TestCase):
             ({"total_cost_usd": 0.001}, "Est. cost <$0.01", "<$0.01"),
             ({"total_credits": 3.5}, "3.5 credits", "3.5cr"),
             ({"total_cost_usd": -1, "total_credits": 1}, "1 credit", "1cr"),
-            ({}, "Cost —", "$—"),
         ]
         for uri, expected_index in [(self.uri, 1), (self.compact_uri, 2)]:
             states = [{"thread": {"usage": {"cost": cost}}} for cost, _, _ in cases]
@@ -145,6 +144,33 @@ class StatuslineTests(unittest.TestCase):
                     self.assertIn(case[expected_index], result)
                     if "total_credits" in case[0] and case[0].get("total_cost_usd", -1) < 0:
                         self.assertNotIn("$", result)
+
+    def test_thread_tokens_when_billing_is_unavailable(self):
+        totals = {"total_input_tokens": 12000, "cache_read_input_tokens": 10000,
+                  "other_input_tokens": 2000, "output_tokens": 345}
+        cases = [
+            (totals, "Thread tokens 12,345", "12.3k tok"),
+            ({"total_input_tokens": 0, "output_tokens": 0}, "Thread tokens 0", "0 tok"),
+            ({"total_input_tokens": 999950, "output_tokens": 49}, "Thread tokens 999,999", "999.9k tok"),
+            ({"output_tokens": 10}, None, None),
+            ({}, None, None),
+        ]
+        for uri, position in ((self.uri, 1), (self.compact_uri, 2), (self.adaptive_uri, 2)):
+            states = [{"thread": {"usage": {"total": total, "context": {"used_tokens": 42}}}}
+                      for total, _, _ in cases]
+            for case, reply in zip(cases, exchange(read_messages(uri, *states))):
+                with self.subTest(uri=uri, total=case[0]):
+                    result = display(extract_tree(reply, uri))
+                    self.assertNotIn("$", result)
+                    self.assertNotIn("Cost", result)
+                    if case[position] is None:
+                        self.assertNotIn("tok", result.lower())
+                    else:
+                        self.assertIn(case[position], result)
+        state = {"thread": {"usage": {"total": totals, "cost": {"total_cost_usd": 0}}}}
+        full, = map(display, self.render(state))
+        self.assertIn("Est. cost $0.00", full)
+        self.assertNotIn("Thread tokens", full)
 
     def test_adaptive_budget_priority_and_reversible_resize(self):
         state = {

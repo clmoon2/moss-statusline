@@ -1,6 +1,6 @@
 # Moss for Codex
 
-A terminal footer for tracking **estimated thread cost**, weekly and five-hour allowances, and remaining context in Codex. A compact pane keeps the numbers up front. A wider window has room for the workspace, model, and reset times.
+A terminal footer for tracking **thread usage**, weekly and five-hour allowances, and remaining context in Codex. Moss shows a reported cost or credit count when available and otherwise uses cumulative tokens. A wider window has room for the workspace, model, and reset times.
 
 ![Moss in a 60-column split, followed by examples of weekly limits, low five-hour allowance, and a waiting thread with Git changes](docs/preview.gif)
 
@@ -40,14 +40,14 @@ Restart the Codex TUI, open a fresh conversation and enter `/statusline`. Under 
 
 For the full resize behavior on a local terminal, launch `codex --no-daemon`. Moss measures the attached window on every footer refresh. When everything fits, it uses the full labels, meter, and countdowns. As the pane shrinks, it shortens labels and fits whole fields in priority order. Widening the pane brings details back.
 
-With the shared background server or a remote server, Codex CLI 0.172.0 sends the thread snapshot without the client’s terminal dimensions. Moss sends a compact cost-and-budget summary first, followed by workspace and model details. Each client reveals or clips those trailing fields as its own pane resizes.
+With the shared background server or a remote server, Codex CLI 0.172.0 sends the thread snapshot without the client’s terminal dimensions. Moss sends a compact usage summary first, followed by workspace and model details. Each client reveals or clips those trailing fields as its own pane resizes.
 
 ## Reading the footer
 
 | Field | What it tells you |
 | --- | --- |
 | Activity | Whether the displayed thread is ready, starting, thinking, working or waiting. |
-| Thread cost | `Est. cost $4.27` or `~$4.27` is Codex’s cumulative USD estimate for the displayed thread. A positive sub-cent estimate reads `<$0.01`. If Codex supplies only credits, Moss shows them in credits. `Cost —` or `$—` means neither figure was supplied. For actual account charges, check your billing statement. |
+| Thread usage | Codex CLI 0.172.0 labels its per-thread dollar estimate and credit count as Enterprise-only. Moss shows the reported amount when available. On a personal plan, expect `Thread tokens 12,345` or `12.3k tok` once Codex reports input and output totals. Cached input counts once. The field disappears if all three measures are unavailable. |
 | Week / 5h | Percentage of the allowance **remaining**. Amber starts at 25%, red at 10%. A dash means Codex hasn’t supplied the weekly window. In full mode, `Week 65% left ↺ 3d 9h` means the weekly allowance resets in three days and nine hours. A low five-hour balance gets its own countdown. |
 | Context | Percentage of the current thread’s context window remaining. Full mode shows the number first, followed by a six-cell meter. The solid part is the capacity left. Appears when Codex reports usage. |
 | Git | Branch or detached commit, plus commits ahead ↑ and behind ↓ the locally recorded upstream. Counts show staged, edited, new and conflicted entries. In compact mode these are `+`, `~`, `?` and `!`. |

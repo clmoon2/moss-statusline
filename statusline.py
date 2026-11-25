@@ -182,11 +182,12 @@ def reset_countdown(timestamp):
     return f"{minutes}m"
 
 
-def thread_cost(cost, short=False):
-    """Use the thread estimate from Codex, or its credit count if USD is unavailable."""
+def thread_usage(usage, short=False):
+    """Display the reported thread cost, credit count, or cumulative token count."""
     def reported(value):
         return type(value) in (int, float) and 0 <= value <= sys.float_info.max
 
+    cost = usage.get("cost") or {}
     dollars = cost.get("total_cost_usd")
     if reported(dollars):
         tiny = 0 < dollars < 0.01
@@ -203,7 +204,21 @@ def thread_cost(cost, short=False):
         unit = "credit" if credits == 1 else "credits"
         return text(f"{amount} {unit}", "cyan")
 
-    return text("$—" if short else "Cost —", "status-metadata")
+    total = usage.get("total") or {}
+    inputs, outputs = total.get("total_input_tokens"), total.get("output_tokens")
+    if any(type(n) is not int or n < 0 for n in (inputs, outputs)):
+        return None
+    tokens = inputs + outputs  # total_input_tokens already includes cached inputs.
+    if short:
+        for unit, scale in (("B", 10**9), ("M", 10**6), ("k", 10**3)):
+            if tokens >= scale:
+                # Round down so abbreviated totals never cross the next unit.
+                whole, remainder = divmod(tokens, scale)
+                tenth = remainder * 10 // scale
+                fraction = f".{tenth}" if tenth else ""
+                return text(f"{whole}{fraction}{unit} tok", "cyan")
+        return text(f"{tokens} tok", "cyan")
+    return row([text("Thread tokens", "primary"), text(f"{tokens:,}", "cyan")])
 
 
 def allowances(account, short=False, extra=False):
@@ -267,11 +282,14 @@ def render(state, short=None, extra=False, icon_only=False):
         children.append(row([text(badge, "black", True)],
                             gap=0, background=color))
 
-    children.append(thread_cost(thread.get("usage", {}).get("cost") or {}, short))
+    usage = thread.get("usage") or {}
+    usage_field = thread_usage(usage, short)
+    if usage_field is not None:
+        children.append(usage_field)
     priority, limit_details = allowances(state.get("account") or {}, short, extra)
     children.extend(priority)
 
-    context = thread.get("usage", {}).get("context", {})
+    context = usage.get("context") or {}
     used = context.get("used_percentage")
     if used is None and context.get("context_window_size", 0) > 0 and "used_tokens" in context:
         used = 100 * context["used_tokens"] / context["context_window_size"]

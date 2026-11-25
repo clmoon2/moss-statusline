@@ -44,6 +44,9 @@ def sample_tree(scene, columns=None):
                       "cost": {"total_cost_usd": 1.84}},
         },
     }
+    if scene == "ready":
+        state["thread"]["usage"].pop("cost")
+        state["thread"]["usage"]["total"] = {"total_input_tokens": 11200, "output_tokens": 1145}
     records = b"# branch.head main\0"
     if scene == "waiting":
         records = (b"# branch.head fix/cache\0# branch.ab +2 -0\0"
