@@ -193,27 +193,31 @@ def allowances(account, short=False):
     for duration, label in [(10080, "week"), (300, "5h")]:
         if duration not in windows:
             if duration == 10080:
-                priority.append(text("wk —" if short else "◷ week —", "status-metadata"))
+                priority.append(text("wk —" if short else "Week —", "status-metadata"))
             continue
         limit, window = windows[duration]
         # Keep small positive balances distinct from an exhausted limit.
         balance = max(0, min(100, 100 - window["used_percent"]))
         percentage = "<1%" if 0 < balance < 1 else f"{round(balance)}%"
-        if short and label == "week":
-            label = "wk"
+        if duration == 10080:
+            label = "wk" if short else "Week"
         if limit.get("limit_id") != "codex":
             name = compact(limit.get("limit_name") or limit.get("limit_id") or "", 15)
             label = f"{name} {label}".strip()
-        value = f"{label} {percentage}" if short else f"◷ {percentage} {label} left"
-        balance_field = text(value, allowance_color(balance), bold=balance <= 10)
+        if short:
+            balance_field = text(f"{label} {percentage}", allowance_color(balance), bold=balance <= 10)
+        else:
+            fields = [text(label, "primary"), text(f"{percentage} left", allowance_color(balance),
+                                                   bold=balance <= 10)]
+            if duration == 10080 or balance <= 25:
+                countdown = reset_countdown(window.get("resets_at"))
+                if countdown:
+                    fields.append(text(f"↺ {countdown}", "status-metadata"))
+            balance_field = row(fields)
         if duration == 10080 or balance <= 25:
             priority.append(balance_field)
         else:
             detail.append(balance_field)
-        if not short and (duration == 10080 or balance <= 25):
-            countdown = reset_countdown(window.get("resets_at"))
-            if countdown:
-                detail.append(text(f"↺ {label} in {countdown}", "status-metadata"))
     return priority, detail
 
 
@@ -233,24 +237,22 @@ def render(state, short=None):
     priority, limit_details = allowances(state.get("account") or {}, short)
     children.extend(priority)
 
-    label = compact(model.get("display_name") or model.get("id") or "Codex", 28)
-    model_parts = [text(label, "primary", True)]
-    if effort := model.get("reasoning_level"):
-        model_parts.append(text(compact(effort, 12), "cyan"))
-    if tier := model.get("service_tier_display_name"):
-        model_parts.append(text("ϟ " + compact(tier.lower(), 16), "yellow"))
-
     context = thread.get("usage", {}).get("context", {})
     used = context.get("used_percentage")
     if used is None and context.get("context_window_size", 0) > 0 and "used_tokens" in context:
         used = 100 * context["used_tokens"] / context["context_window_size"]
     if used is not None:
         remaining = max(0, min(100, round(100 - used)))
-        filled = round(remaining * 6 / 100)
-        meter = "▰" * filled + "▱" * (6 - filled)
-        value = f"ctx {remaining}%" if short else f"{meter} {remaining}% ctx left"
-        children.append(text(value, allowance_color(remaining)))
+        color = allowance_color(remaining)
+        if short:
+            children.append(text(f"ctx {remaining}%", color))
+        else:
+            filled = round(remaining * 6 / 100)
+            meter = row([text("━" * filled, color), text("┄" * (6 - filled), "status-metadata")], gap=0)
+            children.append(row([text("Context", "primary"), text(f"{remaining}% left", color), meter]))
 
+    if not short:
+        children.extend(limit_details)
     if cwd := thread.get("workspace", {}).get("cwd"):
         path = Path(cwd)
         if path.is_relative_to(Path.home()):
@@ -258,11 +260,19 @@ def render(state, short=None):
         git = git_status(cwd, short)
         if not short or not git:
             where = (path.name or str(path)) if short else str(path)
-            children.append(text("⌂ " + compact(where, 12 if short else 30), "cyan"))
+            if short:
+                children.append(text("⌂ " + compact(where, 12), "cyan"))
+            else:
+                children.append(row([text("│", "status-metadata"), text(compact(where, 30), "cyan")], gap=2))
         children.extend(git)
     if not short:
+        label = compact(model.get("display_name") or model.get("id") or "Codex", 28)
+        model_parts = [text(label, "primary", True)]
+        if effort := model.get("reasoning_level"):
+            model_parts.extend([text("· effort", "status-metadata"), text(compact(effort, 12).lower(), "cyan")])
+        if tier := model.get("service_tier_display_name"):
+            model_parts.extend([text("· tier", "status-metadata"), text(compact(tier, 16).lower(), "yellow")])
         children.append(row(model_parts))
-        children.extend(limit_details)
     return row(children, gap=1 if short else 2, wrap="wrap")
 
 

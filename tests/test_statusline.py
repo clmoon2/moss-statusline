@@ -62,11 +62,11 @@ def display(node):
     return gap.join(display(child) for child in node["children"] if child is not None)
 
 
-def account(weekly_used, five_hour_used, reset=None):
+def account(weekly_used, five_hour_used, reset=None, weekly_reset=None):
     return {"rate_limits": [{
         "limit_id": "codex",
         "primary_limit": {"window_minutes": 300, "used_percent": five_hour_used, "resets_at": reset},
-        "secondary_limit": {"window_minutes": 10080, "used_percent": weekly_used},
+        "secondary_limit": {"window_minutes": 10080, "used_percent": weekly_used, "resets_at": weekly_reset},
     }]}
 
 
@@ -115,10 +115,26 @@ class StatuslineTests(unittest.TestCase):
             {"thread": {"model": {"display_name": "Model Two"}, "usage": {"context": {}}}},
         ))
         self.assertIn("Model One", before)
-        self.assertIn("28% ctx left", before)
+        self.assertIn("Context 28% left", before)
         self.assertIn("Model Two", after)
         self.assertNotIn("Model One", after)
-        self.assertNotIn("ctx left", after)
+        self.assertNotIn("Context ", after)
+
+    def test_full_footer_groups_reset_context_and_model_settings(self):
+        state = {
+            "account": account(35, 20, weekly_reset=time.time() + (3 * 24 + 9) * 3600),
+            "thread": {
+                "agent": {"state": "ready"},
+                "usage": {"context": {"used_percentage": 38}},
+                "model": {"display_name": "GPT-6.2-Astra", "reasoning_level": "ultra",
+                          "service_tier_display_name": "Ultrafast"},
+            },
+        }
+        summary, = map(display, self.render(state))
+        self.assertRegex(summary, r"Week 65% left +↺ 3d 9h")
+        self.assertRegex(summary, r"Context 62% left +━━━━┄┄")
+        self.assertIn("effort ultra", summary)
+        self.assertIn("tier ultrafast", summary)
 
     def test_picker_layout_is_selected_per_resource_read(self):
         state = {"thread": {"model": {"display_name": "Example Model"},
@@ -130,7 +146,7 @@ class StatuslineTests(unittest.TestCase):
         replies = exchange(reads)
         self.assertEqual([reply["id"] for reply in replies], [0, 1, 2])
         full, compact, full_again = [display(extract_tree(reply, uri)) for reply, uri in zip(replies, uris)]
-        self.assertIn("68% week left", full)
+        self.assertIn("Week 68% left", full)
         self.assertIn("Example Model", full)
         self.assertIn("wk 68% 5h 4% ctx 70%", compact)
         self.assertNotIn("Example Model", compact)
@@ -139,26 +155,26 @@ class StatuslineTests(unittest.TestCase):
     def test_week_and_urgent_five_hour_limit_fit_a_narrow_front_section(self):
         now = time.time()
         state = {
-            "account": account(32, 97, now + 47.5 * 60),
+            "account": account(32, 97, now + 47.5 * 60, now + 3 * 86400 + 9 * 3600),
             "thread": {"agent": {"state": "working"}, "model": {"display_name": "Example Model"},
                        "usage": {"context": {"context_window_size": 1000, "used_tokens": 300}}},
         }
         summary, = map(display, self.render(state))
-        self.assertIn("68% week left", summary[:60])
-        self.assertIn("3% 5h left", summary[:60])
-        self.assertIn("70% ctx left", summary)
-        self.assertIn("5h in 48m", summary)
-        self.assertLess(summary.index("3% 5h left"), summary.index("70% ctx left"))
+        self.assertIn("Week 68% left", summary[:60])
+        self.assertIn("5h 3% left", summary[:60])
+        self.assertIn("Context 70% left", summary)
+        self.assertRegex(summary, r"5h 3% left +↺ 48m")
+        self.assertLess(summary.index("5h 3% left"), summary.index("Context 70% left"))
 
     def test_account_windows_with_missing_fractional_and_overdrawn_balances(self):
         state = {"account": account(99.6, 130, time.time() - 60)}
         other = {"limit_id": "other", "primary_limit": {"window_minutes": 10080, "used_percent": 80}}
         state["account"]["rate_limits"].insert(0, other)
         available, absent = map(display, self.render(state, {}))
-        self.assertIn("<1% week left", available)
-        self.assertIn("0% 5h left", available)
-        self.assertNotIn("5h in", available)
-        self.assertIn("week —", absent)
+        self.assertIn("Week <1% left", available)
+        self.assertIn("5h 0% left", available)
+        self.assertNotIn("↺", available)
+        self.assertIn("Week —", absent)
         self.assertNotIn("%", absent)
 
     def test_compact_layout_fits_common_fields_in_a_48_column_split(self):

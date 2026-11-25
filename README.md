@@ -41,8 +41,8 @@ Restart the Codex TUI, open a fresh conversation and enter `/statusline`. Under 
 | Field | What it tells you |
 | --- | --- |
 | Activity | Whether the displayed thread is ready, starting, thinking, working or waiting. |
-| Week / 5h | Percentage of the allowance **remaining**. Amber starts at 25%, red at 10%. A dash means Codex hasn’t supplied the weekly window. The full view shows the weekly reset countdown and, when the five-hour balance is low, its countdown too. |
-| Context | Percentage of the current thread’s context window remaining. The full view adds a six-segment meter. Appears when Codex reports usage. |
+| Week / 5h | Percentage of the allowance **remaining**. Amber starts at 25%, red at 10%. A dash means Codex hasn’t supplied the weekly window. In full mode, `Week 65% left ↺ 3d 9h` means the weekly allowance resets in three days and nine hours. A low five-hour balance gets its own countdown. |
+| Context | Percentage of the current thread’s context window remaining. Full mode shows the number first, followed by a six-cell meter. The solid part is the capacity left. Appears when Codex reports usage. |
 | Git | Branch or detached commit, plus commits ahead ↑ and behind ↓ the locally recorded upstream. Counts show staged, edited, new and conflicted entries. In compact mode these are `+`, `~`, `?` and `!`. |
 | Workspace and model | Full mode shows the directory, model, reasoning level and service tier when available. Compact mode shows the branch, or the directory name outside a repo. |
 
